@@ -108,11 +108,17 @@ range_op_exclusive = { "..." }
 //   .b64u/.b64c/.hex/.b32/.b45 - encoding constraints
 //   .printf/.json/.join - formatting operations
 control_op = { "." ~ control_name }
-control_name = { "size" | "bits" | "regexp" | "pcre" | "iregexp" | "cbor" | "cborseq" 
-               | "within" | "and" | "lt" | "le" | "gt" | "ge" | "eq" | "ne" 
-               | "default" | "cat" | "det" | "plus" | "abnfb" | "abnf" 
+// IMPORTANT: where one control name is a prefix of another (`cbor` of
+// `cborseq`, `le`/`lt` of nothing yet, `b64u`/`b64c` of `b64u-sloppy`/
+// `b64c-sloppy`, `hex` of `hexuc`/`hexlc`, `abnf` of `abnfb`), the longer
+// alternative must appear BEFORE the shorter one — Pest matches alternations
+// left-to-right without longest-match preference, so the shorter prefix
+// would otherwise eat the leading bytes and leave the suffix unparsed.
+control_name = { "size" | "bits" | "regexp" | "pcre" | "iregexp" | "cborseq" | "cbor"
+               | "within" | "and" | "lt" | "le" | "gt" | "ge" | "eq" | "ne"
+               | "default" | "cat" | "det" | "plus" | "abnfb" | "abnf"
                | "feature" | "b64u-sloppy" | "b64c-sloppy" | "b64u" | "b64c"
-               | "hexuc" | "hexlc" | "hex" | "base10" | "printf" | "json" | "join" 
+               | "hexuc" | "hexlc" | "hex" | "base10" | "printf" | "json" | "join"
                | "b32" | "h32" | "b45" | "bitfield" }
 
 controller = { type2 }

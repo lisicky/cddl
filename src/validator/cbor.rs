@@ -17,7 +17,7 @@ use std::{
   fmt::{self, Write},
 };
 
-use super::cbor_value::{decode_cbor, Value};
+use super::cbor_value::{decode_cbor, decode_cbor_sequence, Value};
 use chrono::{TimeZone, Utc};
 use serde_json;
 
@@ -976,6 +976,14 @@ where
             cv.state.is_multi_type_choice = self.state.is_multi_type_choice;
             cv.state.is_multi_group_choice = self.state.is_multi_group_choice;
             cv.state.type_group_name_entry = self.state.type_group_name_entry;
+            // Carry the current data_location and append the element's index
+            // so any error raised by the sub-validator points at exactly the
+            // failing array slot rather than the empty top-level path.
+            let _ = write!(
+              cv.state.data_location,
+              "{}/{}",
+              self.state.data_location, idx
+            );
             cv.visit_control_operator(target, ctrl, controller)?;
             self.errors.append(&mut cv.errors);
             return Ok(());
@@ -1362,6 +1370,14 @@ where
       }
       ControlOperator::CBOR | ControlOperator::CBORSEQ => {
         self.state.ctrl = Some(ctrl);
+        // `.cborseq` decodes a CBOR sequence (RFC 8742 — concatenated
+        // top-level data items) into an array; `.cbor` decodes a single
+        // CBOR data item.
+        let decode_inner: fn(&[u8]) -> _ = if matches!(ctrl, ControlOperator::CBORSEQ) {
+          decode_cbor_sequence
+        } else {
+          decode_cbor
+        };
         match target {
           Type2::Typename { ident, .. }
             if is_ident_byte_string_data_type(self.state.cddl, ident) =>
@@ -1369,7 +1385,7 @@ where
             match &self.cbor {
               Value::Bytes(b) => {
                 // Handle direct byte string case
-                let inner_value = decode_cbor(b);
+                let inner_value = decode_inner(b);
                 match inner_value {
                   Ok(value) => {
                     #[cfg(all(feature = "additional-controls", target_arch = "wasm32"))]
@@ -1403,7 +1419,7 @@ where
                 // Handle array of byte strings case
                 for (idx, item) in arr.iter().enumerate() {
                   if let Value::Bytes(b) = item {
-                    let inner_value = decode_cbor(b);
+                    let inner_value = decode_inner(b);
                     match inner_value {
                       Ok(value) => {
                         let current_location = self.state.data_location.clone();
@@ -2322,7 +2338,7 @@ where
       return Ok(());
     } else if matches!(self.state.ctrl, Some(ControlOperator::CBORSEQ)) {
       if let Value::Bytes(b) = &self.cbor {
-        let value = decode_cbor(b);
+        let value = decode_cbor_sequence(b);
         match value {
           Ok(Value::Array(_)) => {
             let current_location = self.state.data_location.clone();

@@ -217,6 +217,25 @@ pub fn decode_cbor(input: &[u8]) -> Result<Value, DecodeError> {
   decode_value(&mut decoder)
 }
 
+/// Decode a CBOR sequence (RFC 8742 / `.cborseq`): zero or more concatenated
+/// top-level CBOR data items in a single byte slice, returned as a
+/// `Value::Array` so they can be validated against an array CDDL type.
+pub fn decode_cbor_sequence(input: &[u8]) -> Result<Value, DecodeError> {
+  let cursor = std::io::Cursor::new(input);
+  let mut decoder = Decoder::from(cursor);
+  let mut items = Vec::new();
+  loop {
+    // ciborium-ll returns `Error::Io` when the underlying cursor hits EOF
+    // mid-pull; we treat that as end-of-sequence rather than an error.
+    match decode_value(&mut decoder) {
+      Ok(v) => items.push(v),
+      Err(DecodeError::Io(_)) => break,
+      Err(e) => return Err(e),
+    }
+  }
+  Ok(Value::Array(items))
+}
+
 fn decode_value<R: ciborium_io::Read>(decoder: &mut Decoder<R>) -> Result<Value, DecodeError>
 where
   ciborium_ll::Error<R::Error>: Into<DecodeError>,

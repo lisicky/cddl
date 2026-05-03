@@ -191,7 +191,6 @@ fn validate_cbor_homogenous_array() {
 }
 
 #[test]
-#[ignore] // FIXME: broken
 fn validate_cbor_array_groups() {
   let cddl_input = r#"thing = [int, (int, int)]"#;
   validate_cbor_from_slice(cddl_input, cbor::ARRAY_123, None).unwrap();
@@ -934,6 +933,78 @@ fn type_choice_failure_reports_deep_path() {
   assert!(
     !msg.contains("/Map(["),
     "expected no `Map([...])` debug-dump segment in cbor_location, got:\n{}",
+    msg
+  );
+}
+
+// Regression: `.cborseq` must (a) parse — earlier the grammar listed `cbor`
+// before `cborseq` so the shorter prefix `cbor` ate the leading bytes — and
+// (b) decode the embedded byte string as a CBOR sequence (RFC 8742 — multiple
+// concatenated top-level data items) into an array, not just the first item.
+#[test]
+fn validate_cborseq_decodes_concatenated_items() {
+  fn enc(v: &Value) -> Vec<u8> {
+    let mut b = Vec::new();
+    ciborium::ser::into_writer(v, &mut b).unwrap();
+    b
+  }
+
+  // Build a bytestring with three concatenated CBOR ints: 1, 2, 3.
+  let mut seq = Vec::new();
+  seq.extend_from_slice(&enc(&Value::Integer(1.into())));
+  seq.extend_from_slice(&enc(&Value::Integer(2.into())));
+  seq.extend_from_slice(&enc(&Value::Integer(3.into())));
+  let bstr = Value::Bytes(seq);
+  let bytes = enc(&bstr);
+
+  // Fixed-shape match.
+  let cddl = r#"start = bstr .cborseq [int, int, int]"#;
+  validate_cbor_from_slice(cddl, &bytes, None).unwrap();
+
+  // Homogeneous match.
+  let cddl = r#"start = bstr .cborseq [+ int]"#;
+  validate_cbor_from_slice(cddl, &bytes, None).unwrap();
+
+  // Empty sequence is also a valid CBOR sequence and should match `[]`.
+  let empty = enc(&Value::Bytes(Vec::new()));
+  validate_cbor_from_slice(r#"start = bstr .cborseq []"#, &empty, None).unwrap();
+
+  // Wrong inner type: sequence of ints validated against `[+ tstr]` must fail.
+  assert!(validate_cbor_from_slice(r#"start = bstr .cborseq [+ tstr]"#, &bytes, None).is_err());
+}
+
+// Regression: when a bareword-less array entry is a typename whose body is
+// `bstr .size N`, a wrong-size CBOR bytes value at index `i` must report the
+// failure with the deep cbor_location `/i`. The control-op-on-array-element
+// fast path used to forget to seed the sub-validator's `data_location`, so
+// the error fired at the empty top-level path.
+#[test]
+fn type_choice_size_failure_reports_array_index_path() {
+  let cddl = r#"
+    start = wrap<inner>
+    wrap<a> = #6.258([+ a]) / [+ a]
+    inner = [pubkey, signature]
+    pubkey = bytes .size 32
+    signature = bytes .size 64
+  "#;
+
+  // Witness with too-short signature at $[0][1].
+  let v = Value::Array(vec![Value::Array(vec![
+    Value::Bytes(vec![0x01; 32]),
+    Value::Bytes(vec![0x02; 10]),
+  ])]);
+  let bytes = cbor_encode(&v);
+  let err =
+    validate_cbor_from_slice(cddl, &bytes, None).expect_err("must fail on wrong-size signature");
+  let msg = err.to_string();
+  assert!(
+    msg.contains("/0/1"),
+    "expected deep path /0/1 in error, got:\n{}",
+    msg
+  );
+  assert!(
+    msg.contains(".size 64"),
+    "expected size constraint mention, got:\n{}",
     msg
   );
 }
