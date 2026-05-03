@@ -161,7 +161,7 @@ pub struct CBORValidator<'a> {
   // Collect invalid array item errors where the key is the index of the invalid
   // array item
   array_errors: Option<HashMap<usize, Vec<ValidationError>>>,
-  range_upper: Option<usize>,
+  range_upper: Option<u64>,
 }
 
 impl<'a> CBORValidator<'a> {
@@ -419,8 +419,8 @@ impl<'a> CBORValidator<'a> {
     Ok(())
   }
 
-  // Helper function to resolve a Type2 bound to a usize value
-  fn resolve_bound_to_uint(&self, bound: &Type2<'a>) -> std::result::Result<usize, String> {
+  // Helper function to resolve a Type2 bound to a u64 value
+  fn resolve_bound_to_uint(&self, bound: &Type2<'a>) -> std::result::Result<u64, String> {
     match bound {
       Type2::UintValue { value, .. } => Ok(*value),
       Type2::Typename { ident, .. } => {
@@ -854,7 +854,7 @@ where
       (Ok(l), Ok(u)) => {
         match &self.cbor {
           Value::Bytes(b) => {
-            let len = b.len();
+            let len = b.len() as u64;
             if is_inclusive {
               if len < l || len > u {
                 self.add_error(format!(
@@ -872,9 +872,10 @@ where
           Value::Text(s) => match self.state.ctrl {
             Some(ControlOperator::SIZE) => {
               let len = s.len();
+              let s_len = len as u64;
               let s = s.clone();
               if is_inclusive {
-                if s.len() < l || s.len() > u {
+                if s_len < l || s_len > u {
                   self.add_error(format!(
                     "expected \"{}\" string length to be in the range {} <= value <= {}, got {}",
                     s, l, u, len
@@ -882,7 +883,7 @@ where
                 }
 
                 return Ok(());
-              } else if s.len() < l || s.len() >= u {
+              } else if s_len < l || s_len >= u {
                 self.add_error(format!(
                   "expected \"{}\" string length to be in the range {} <= value < {}, got {}",
                   s, l, u, len
@@ -4240,18 +4241,16 @@ where
     let error: Option<String> = match &self.cbor {
       Value::Integer(i) => match value {
         token::Value::INT(v) => match &self.state.ctrl {
-          Some(ControlOperator::NE) | Some(ControlOperator::DEFAULT)
-            if i128::from(*i) != *v as i128 =>
-          {
+          Some(ControlOperator::NE) | Some(ControlOperator::DEFAULT) if i128::from(*i) != *v => {
             None
           }
-          Some(ControlOperator::LT) if i128::from(*i) < *v as i128 => None,
-          Some(ControlOperator::LE) if i128::from(*i) <= *v as i128 => None,
-          Some(ControlOperator::GT) if i128::from(*i) > *v as i128 => None,
-          Some(ControlOperator::GE) if i128::from(*i) >= *v as i128 => None,
+          Some(ControlOperator::LT) if i128::from(*i) < *v => None,
+          Some(ControlOperator::LE) if i128::from(*i) <= *v => None,
+          Some(ControlOperator::GT) if i128::from(*i) > *v => None,
+          Some(ControlOperator::GE) if i128::from(*i) >= *v => None,
           #[cfg(feature = "additional-controls")]
           Some(ControlOperator::PLUS) => {
-            if i128::from(*i) == *v as i128 {
+            if i128::from(*i) == *v {
               None
             } else {
               Some(format!("expected computed .plus value {}, got {:?}", v, i))
@@ -4259,7 +4258,7 @@ where
           }
           #[cfg(feature = "additional-controls")]
           None | Some(ControlOperator::FEATURE) => {
-            if i128::from(*i) == *v as i128 {
+            if i128::from(*i) == *v {
               None
             } else {
               Some(format!("expected value {}, got {:?}", v, i))
@@ -4474,7 +4473,7 @@ where
         },
         token::Value::UINT(u) => match &self.state.ctrl {
           Some(ControlOperator::SIZE) => {
-            if s.len() == *u {
+            if s.len() as u64 == *u {
               None
             } else {
               Some(format!("expected \"{}\" .size {}, got {}", s, u, s.len()))
@@ -4491,7 +4490,7 @@ where
         token::Value::UINT(v) => match &self.state.ctrl {
           Some(ControlOperator::SIZE) => {
             if let Some(range_upper) = self.range_upper.as_ref() {
-              let len = b.len();
+              let len = b.len() as u64;
               if len < *v || len > *range_upper {
                 Some(format!(
                   "expected bytes .size to be in range {} <= value <= {}, got {}",
@@ -4500,7 +4499,7 @@ where
               } else {
                 None
               }
-            } else if b.len() == *v {
+            } else if b.len() as u64 == *v {
               None
             } else {
               Some(format!("expected \"{:?}\" .size {}, got {}", b, v, b.len()))
@@ -4508,7 +4507,7 @@ where
           }
           Some(ControlOperator::BITS) => {
             if let Some(rsv) = v.checked_shr(3) {
-              if let Some(s) = b.get(rsv) {
+              if let Some(s) = b.get(rsv as usize) {
                 if let Some(lsv) = 1u32.checked_shl(*v as u32 & 7) {
                   if (*s as u32 & lsv) != 0 {
                     None
@@ -4715,7 +4714,9 @@ where
 pub fn token_value_into_cbor_value(value: token::Value) -> Value {
   match value {
     token::Value::UINT(i) => Value::Integer(i.into()),
-    token::Value::INT(i) => Value::Integer(i.into()),
+    token::Value::INT(i) => Value::Integer(
+      ciborium::value::Integer::try_from(i).expect("CDDL integer literal out of CBOR int range"),
+    ),
     token::Value::FLOAT(f) => Value::Float(f),
     token::Value::TEXT(t) => Value::Text(t.to_string()),
     token::Value::BYTE(b) => match b {
@@ -4762,7 +4763,7 @@ fn extract_bitfield_widths(controller: &Type2) -> Option<u128> {
 
 /// Extracts a uint value from a Type AST node.
 #[cfg(feature = "freezer")]
-fn extract_uint_from_type(t: &crate::ast::Type) -> Option<usize> {
+fn extract_uint_from_type(t: &crate::ast::Type) -> Option<u64> {
   if t.type_choices.len() != 1 {
     return None;
   }
@@ -4772,10 +4773,10 @@ fn extract_uint_from_type(t: &crate::ast::Type) -> Option<usize> {
 
 /// Extracts a uint value from a Type2 AST node.
 #[cfg(feature = "freezer")]
-fn extract_uint_from_type2(t2: &Type2) -> Option<usize> {
+fn extract_uint_from_type2(t2: &Type2) -> Option<u64> {
   match t2 {
     Type2::UintValue { value, .. } => Some(*value),
-    Type2::IntValue { value, .. } if *value >= 0 => Some(*value as usize),
+    Type2::IntValue { value, .. } if *value >= 0 => Some(*value as u64),
     _ => None,
   }
 }

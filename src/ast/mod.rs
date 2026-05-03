@@ -1051,7 +1051,7 @@ pub enum Type2<'a> {
   /// Integer value
   IntValue {
     /// Value
-    value: isize,
+    value: i128,
     /// Span
     #[cfg(feature = "ast-span")]
     span: Span,
@@ -1060,7 +1060,7 @@ pub enum Type2<'a> {
   /// Unsigned integer value
   UintValue {
     /// Value
-    value: usize,
+    value: u64,
     /// Span
     #[cfg(feature = "ast-span")]
     span: Span,
@@ -1642,8 +1642,8 @@ impl<'a> From<Type1<'a>> for Type2<'a> {
   }
 }
 
-impl From<usize> for Type2<'_> {
-  fn from(value: usize) -> Self {
+impl From<u64> for Type2<'_> {
+  fn from(value: u64) -> Self {
     Type2::UintValue {
       value,
       #[cfg(feature = "ast-span")]
@@ -1652,8 +1652,8 @@ impl From<usize> for Type2<'_> {
   }
 }
 
-impl From<isize> for Type2<'_> {
-  fn from(value: isize) -> Self {
+impl From<i128> for Type2<'_> {
+  fn from(value: i128) -> Self {
     Type2::IntValue {
       value,
       #[cfg(feature = "ast-span")]

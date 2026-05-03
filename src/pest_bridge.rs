@@ -2032,7 +2032,7 @@ fn convert_number_to_type2<'a>(
   for inner in pair.into_inner() {
     match inner.as_rule() {
       Rule::uint_value => {
-        let val = inner.as_str().parse::<usize>().map_err(|_| Error::PARSER {
+        let val = inner.as_str().parse::<u64>().map_err(|_| Error::PARSER {
           position: pest_span_to_position(&inner.as_span(), input),
           msg: ErrorMsg {
             short: "Invalid unsigned integer".to_string(),
@@ -2042,7 +2042,7 @@ fn convert_number_to_type2<'a>(
         return Ok(ast::Type2::UintValue { value: val, span });
       }
       Rule::int_value => {
-        let val = inner.as_str().parse::<isize>().map_err(|_| Error::PARSER {
+        let val = inner.as_str().parse::<i128>().map_err(|_| Error::PARSER {
           position: pest_span_to_position(&inner.as_span(), input),
           msg: ErrorMsg {
             short: "Invalid integer".to_string(),
@@ -2102,7 +2102,7 @@ fn convert_number_to_type2<'a>(
   for inner in pair.into_inner() {
     match inner.as_rule() {
       Rule::uint_value => {
-        let val = inner.as_str().parse::<usize>().map_err(|_| Error::PARSER {
+        let val = inner.as_str().parse::<u64>().map_err(|_| Error::PARSER {
           msg: ErrorMsg {
             short: "Invalid unsigned integer".to_string(),
             extended: None,
@@ -2111,7 +2111,7 @@ fn convert_number_to_type2<'a>(
         return Ok(ast::Type2::UintValue { value: val });
       }
       Rule::int_value => {
-        let val = inner.as_str().parse::<isize>().map_err(|_| Error::PARSER {
+        let val = inner.as_str().parse::<i128>().map_err(|_| Error::PARSER {
           msg: ErrorMsg {
             short: "Invalid integer".to_string(),
             extended: None,

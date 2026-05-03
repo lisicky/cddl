@@ -603,10 +603,10 @@ pub fn plus_operation<'a>(
       } => values.push((value + controller).into()),
       Type2::IntValue {
         value: controller, ..
-      } => values.push(((*value as isize + controller) as usize).into()),
+      } => values.push(((*value as i128 + controller) as u64).into()),
       Type2::FloatValue {
         value: controller, ..
-      } => values.push(((*value as isize + *controller as isize) as usize).into()),
+      } => values.push(((*value as i128 + *controller as i128) as u64).into()),
       Type2::Typename { ident, .. } => {
         let nv = numeric_values_from_ident(cddl, ident);
         if nv.is_empty() {
@@ -649,10 +649,10 @@ pub fn plus_operation<'a>(
       } => values.push((value + controller).into()),
       Type2::UintValue {
         value: controller, ..
-      } => values.push((value + *controller as isize).into()),
+      } => values.push((value + *controller as i128).into()),
       Type2::FloatValue {
         value: controller, ..
-      } => values.push((value + *controller as isize).into()),
+      } => values.push((value + *controller as i128).into()),
       Type2::Typename { ident, .. } => {
         let nv = numeric_values_from_ident(cddl, ident);
         if nv.is_empty() {
@@ -1497,11 +1497,11 @@ pub fn validate_base10_text<'a>(
   }
 
   match controller {
-    Type2::IntValue { value, .. } => match text_value.parse::<isize>() {
+    Type2::IntValue { value, .. } => match text_value.parse::<i128>() {
       Ok(parsed_value) => Ok(parsed_value == *value),
       Err(_) => Ok(false),
     },
-    Type2::UintValue { value, .. } => match text_value.parse::<usize>() {
+    Type2::UintValue { value, .. } => match text_value.parse::<u64>() {
       Ok(parsed_value) => Ok(parsed_value == *value),
       Err(_) => Ok(false),
     },
@@ -1767,21 +1767,21 @@ fn format_single_arg(
 }
 
 #[cfg(feature = "additional-controls")]
-fn extract_int(t: &Type2<'_>) -> Result<isize, String> {
+fn extract_int(t: &Type2<'_>) -> Result<i128, String> {
   match t {
     Type2::IntValue { value, .. } => Ok(*value),
-    Type2::UintValue { value, .. } => Ok(*value as isize),
-    Type2::FloatValue { value, .. } => Ok(*value as isize),
+    Type2::UintValue { value, .. } => Ok(*value as i128),
+    Type2::FloatValue { value, .. } => Ok(*value as i128),
     _ => Err(format!("expected integer for printf, got {}", t)),
   }
 }
 
 #[cfg(feature = "additional-controls")]
-fn extract_uint(t: &Type2<'_>) -> Result<usize, String> {
+fn extract_uint(t: &Type2<'_>) -> Result<u64, String> {
   match t {
     Type2::UintValue { value, .. } => Ok(*value),
-    Type2::IntValue { value, .. } if *value >= 0 => Ok(*value as usize),
-    Type2::FloatValue { value, .. } => Ok(*value as usize),
+    Type2::IntValue { value, .. } if *value >= 0 => Ok(*value as u64),
+    Type2::FloatValue { value, .. } => Ok(*value as u64),
     _ => Err(format!("expected unsigned integer for printf, got {}", t)),
   }
 }
@@ -1865,10 +1865,10 @@ fn json_matches_type2(json: &serde_json::Value, t2: &Type2<'_>) -> bool {
     }
     // Match against integer literals
     Type2::IntValue { value, .. } => {
-      matches!(json, Value::Number(n) if n.as_i64() == Some(*value as i64))
+      matches!(json, Value::Number(n) if n.as_i64().map(i128::from) == Some(*value))
     }
     Type2::UintValue { value, .. } => {
-      matches!(json, Value::Number(n) if n.as_u64() == Some(*value as u64))
+      matches!(json, Value::Number(n) if n.as_u64() == Some(*value))
     }
     Type2::FloatValue { value, .. } => {
       matches!(json, Value::Number(n) if n.as_f64() == Some(*value))

@@ -1014,13 +1014,14 @@ impl<'a> Visitor<'a, '_, Error> for JSONValidator<'a> {
         match &self.json {
           Value::Number(n) => {
             if let Some(i) = n.as_i64() {
+              let i = i as i128;
               if is_inclusive {
-                if i < *l as i64 || i > *u as i64 {
+                if i < *l || i > *u {
                   self.add_error(error_str);
                 }
               } else {
                 // Changed: For ... ranges, make it inclusive on lower bound, exclusive on upper bound
-                if i < *l as i64 || i >= *u as i64 {
+                if i < *l || i >= *u {
                   self.add_error(error_str);
                 }
               }
@@ -1056,8 +1057,8 @@ impl<'a> Visitor<'a, '_, Error> for JSONValidator<'a> {
           Value::Number(n) => {
             if let Some(i) = n.as_u64() {
               // Fix: Cast all usize values to u64
-              let lower = *l as u64;
-              let upper = *u as u64;
+              let lower = *l;
+              let upper = *u;
               if is_inclusive {
                 if i < lower || i > upper {
                   self.add_error(error_str);
@@ -1074,8 +1075,8 @@ impl<'a> Visitor<'a, '_, Error> for JSONValidator<'a> {
             Some(ControlOperator::SIZE) => {
               let len = s.len() as u64; // Fix: Convert len to u64
                                         // Fix: Cast all usize values to u64
-              let lower = *l as u64;
-              let upper = *u as u64;
+              let lower = *l;
+              let upper = *u;
               if is_inclusive {
                 if len < lower || len > upper {
                   self.add_error(error_str);
@@ -2942,43 +2943,46 @@ impl<'a> Visitor<'a, '_, Error> for JSONValidator<'a> {
     let error: Option<String> = match value {
       token::Value::INT(v) => match &self.json {
         Value::Number(n) => match n.as_i64() {
-          Some(i) => match &self.state.ctrl {
-            Some(ControlOperator::NE) | Some(ControlOperator::DEFAULT) if i != *v as i64 => None,
-            Some(ControlOperator::LT) if i < *v as i64 => None,
-            Some(ControlOperator::LE) if i <= *v as i64 => None,
-            Some(ControlOperator::GT) if i > *v as i64 => None,
-            Some(ControlOperator::GE) if i >= *v as i64 => None,
-            #[cfg(feature = "additional-controls")]
-            Some(ControlOperator::PLUS) => {
-              if i == *v as i64 {
-                None
-              } else {
-                Some(format!("expected computed .plus value {}, got {}", v, n))
+          Some(i) => {
+            let i = i as i128;
+            match &self.state.ctrl {
+              Some(ControlOperator::NE) | Some(ControlOperator::DEFAULT) if i != *v => None,
+              Some(ControlOperator::LT) if i < *v => None,
+              Some(ControlOperator::LE) if i <= *v => None,
+              Some(ControlOperator::GT) if i > *v => None,
+              Some(ControlOperator::GE) if i >= *v => None,
+              #[cfg(feature = "additional-controls")]
+              Some(ControlOperator::PLUS) => {
+                if i == *v {
+                  None
+                } else {
+                  Some(format!("expected computed .plus value {}, got {}", v, n))
+                }
               }
-            }
-            #[cfg(feature = "additional-controls")]
-            None | Some(ControlOperator::FEATURE) => {
-              if i == *v as i64 {
-                None
-              } else {
-                Some(format!("expected value {}, got {}", v, n))
+              #[cfg(feature = "additional-controls")]
+              None | Some(ControlOperator::FEATURE) => {
+                if i == *v {
+                  None
+                } else {
+                  Some(format!("expected value {}, got {}", v, n))
+                }
               }
-            }
-            #[cfg(not(feature = "additional-controls"))]
-            None => {
-              if i == *v as i64 {
-                None
-              } else {
-                Some(format!("expected value {}, got {}", v, n))
+              #[cfg(not(feature = "additional-controls"))]
+              None => {
+                if i == *v {
+                  None
+                } else {
+                  Some(format!("expected value {}, got {}", v, n))
+                }
               }
+              _ => Some(format!(
+                "expected value {} {}, got {}",
+                self.state.ctrl.unwrap(),
+                v,
+                n
+              )),
             }
-            _ => Some(format!(
-              "expected value {} {}, got {}",
-              self.state.ctrl.unwrap(),
-              v,
-              n
-            )),
-          },
+          }
           None => Some(format!("{} cannot be represented as an i64", n)),
         },
         _ => Some(format!("expected value {}, got {}", v, self.json)),
@@ -2986,18 +2990,18 @@ impl<'a> Visitor<'a, '_, Error> for JSONValidator<'a> {
       token::Value::UINT(v) => match &self.json {
         Value::Number(n) => match n.as_u64() {
           Some(i) => match &self.state.ctrl {
-            Some(ControlOperator::NE) | Some(ControlOperator::DEFAULT) if i != *v as u64 => None,
-            Some(ControlOperator::LT) if i < *v as u64 => None,
-            Some(ControlOperator::LE) if i <= *v as u64 => None,
-            Some(ControlOperator::GT) if i > *v as u64 => None,
-            Some(ControlOperator::GE) if i >= *v as u64 => None,
+            Some(ControlOperator::NE) | Some(ControlOperator::DEFAULT) if i != *v => None,
+            Some(ControlOperator::LT) if i < *v => None,
+            Some(ControlOperator::LE) if i <= *v => None,
+            Some(ControlOperator::GT) if i > *v => None,
+            Some(ControlOperator::GE) if i >= *v => None,
             Some(ControlOperator::SIZE) => match 256u128.checked_pow(*v as u32) {
               Some(n) if (i as u128) < n => None,
               _ => Some(format!("expected value .size {}, got {}", v, n)),
             },
             #[cfg(feature = "additional-controls")]
             Some(ControlOperator::PLUS) => {
-              if i == *v as u64 {
+              if i == *v {
                 None
               } else {
                 Some(format!("expected computed .plus value {}, got {}", v, n))
@@ -3005,7 +3009,7 @@ impl<'a> Visitor<'a, '_, Error> for JSONValidator<'a> {
             }
             #[cfg(feature = "additional-controls")]
             None | Some(ControlOperator::FEATURE) => {
-              if i == *v as u64 {
+              if i == *v {
                 None
               } else {
                 Some(format!("expected value {}, got {}", v, n))
@@ -3030,7 +3034,7 @@ impl<'a> Visitor<'a, '_, Error> for JSONValidator<'a> {
         },
         Value::String(s) => match &self.state.ctrl {
           Some(ControlOperator::SIZE) => {
-            if s.len() == *v {
+            if s.len() as u64 == *v {
               None
             } else {
               Some(format!("expected \"{}\" .size {}, got {}", s, v, s.len()))

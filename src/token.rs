@@ -403,9 +403,9 @@ pub enum RangeValue<'a> {
     Option<SocketPlug>,
   ),
   /// Integer
-  INT(isize),
+  INT(i128),
   /// Unsigned integer
-  UINT(usize),
+  UINT(u64),
   /// Float
   FLOAT(f64),
 }
@@ -455,9 +455,9 @@ impl fmt::Display for RangeValue<'_> {
 #[derive(Debug, PartialEq, Clone)]
 pub enum Value<'a> {
   /// Integer value
-  INT(isize),
+  INT(i128),
   /// Unsigned integer value
-  UINT(usize),
+  UINT(u64),
   /// Float value
   FLOAT(f64),
   /// Text value
@@ -472,9 +472,9 @@ pub enum Value<'a> {
 #[derive(Debug, PartialEq)]
 pub enum Numeric {
   /// Integer
-  INT(isize),
+  INT(i128),
   /// Unsigned integer
-  UINT(usize),
+  UINT(u64),
   /// Float
   FLOAT(f64),
 }

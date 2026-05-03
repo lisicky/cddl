@@ -9,6 +9,7 @@ use cddl::{
 use ciborium::value::Value;
 use indoc::indoc;
 use serde::{Deserialize, Serialize};
+use std::convert::{TryFrom, TryInto};
 use std::error::Error;
 
 #[rustfmt::skip] 
@@ -763,6 +764,58 @@ fn validate_array_with_generic_typename_entry() {
   ]);
   let bytes = cbor_encode(&invalid_zero);
   assert!(validate_cbor_from_slice(cddl_input, &bytes, None).is_err());
+}
+
+// Regression: negative integer literals down to -2^64 (the CBOR nint floor)
+// must parse and round-trip through the AST. Requires IntValue: i128, not i64.
+#[test]
+fn validate_negative_below_i64_min() {
+  // -2^64 is the smallest CBOR int (major type 1, payload 0xff_ff_ff_ff_ff_ff_ff_ff).
+  // It does NOT fit in i64 (i64::MIN = -2^63).
+  let cddl_input = r#"start = -18446744073709551616"#;
+
+  let v_min = Value::Integer(ciborium::value::Integer::try_from(-1_i128 << 64).unwrap());
+  validate_cbor_from_slice(cddl_input, &cbor_encode(&v_min), None).unwrap();
+
+  // Wrong value should fail.
+  let v_neg_one = Value::Integer((-1_i128).try_into().unwrap());
+  assert!(validate_cbor_from_slice(cddl_input, &cbor_encode(&v_neg_one), None).is_err());
+}
+
+// Regression: integer literals up to u64::MAX must parse and validate
+// correctly on every target (the AST stores them as u64/i128, not usize/isize).
+#[test]
+fn validate_u64_max_literal_in_range() {
+  let cddl_input = r#"
+    start = 1 .. 18446744073709551615
+  "#;
+
+  // Lower bound.
+  let v = Value::Integer(1.into());
+  validate_cbor_from_slice(cddl_input, &cbor_encode(&v), None).unwrap();
+
+  // Upper bound = u64::MAX.
+  let v = Value::Integer(u64::MAX.into());
+  validate_cbor_from_slice(cddl_input, &cbor_encode(&v), None).unwrap();
+
+  // Below the range.
+  let v = Value::Integer(0.into());
+  assert!(validate_cbor_from_slice(cddl_input, &cbor_encode(&v), None).is_err());
+
+  // Same range via a typename — checks resolve_bound_to_uint over u64.
+  let cddl_named = r#"
+    start = 1 .. max_u64
+    max_u64 = 18446744073709551615
+  "#;
+  let v = Value::Integer(u64::MAX.into());
+  validate_cbor_from_slice(cddl_named, &cbor_encode(&v), None).unwrap();
+
+  // Direct match against the literal.
+  let cddl_lit = r#"start = 18446744073709551615"#;
+  let v = Value::Integer(u64::MAX.into());
+  validate_cbor_from_slice(cddl_lit, &cbor_encode(&v), None).unwrap();
+  let v = Value::Integer(0.into());
+  assert!(validate_cbor_from_slice(cddl_lit, &cbor_encode(&v), None).is_err());
 }
 
 // Regression: `bstr .size N` as a member key must filter Map keys correctly,
