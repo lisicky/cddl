@@ -35,6 +35,50 @@ fn verify_json_validation() -> json::Result {
   )
 }
 
+/// Regression: cddl_from_str → CDDL::to_string round-trip must preserve
+/// outer-level comments (top-of-file, between-rule, trailing-on-rule).
+/// Inline comments inside a rule body are not yet captured by the
+/// pest_bridge's outer-comment harvester and are intentionally dropped.
+#[cfg(feature = "ast-comments")]
+#[cfg(feature = "ast-span")]
+#[test]
+fn comments_round_trip_through_format() {
+  use cddl::cddl_from_str;
+
+  let input = "\
+; top comment
+foo = uint  ; trailing comment
+
+; before bar
+bar = tstr
+
+; standalone between
+
+; another floating
+baz = int
+";
+  let cddl = cddl_from_str(input, true).expect("parse");
+  let formatted = cddl.to_string();
+
+  for marker in [
+    "; top comment",
+    "; trailing comment",
+    "; before bar",
+    "; standalone between",
+    "; another floating",
+  ] {
+    assert!(
+      formatted.contains(marker),
+      "expected formatted output to contain {:?}, got:\n{}",
+      marker,
+      formatted
+    );
+  }
+
+  // And the formatted output should itself round-trip back through the parser.
+  cddl_from_str(&formatted, true).expect("re-parse formatted output");
+}
+
 /// Regression test for https://github.com/anweiss/cddl/issues/465
 #[test]
 fn validate_json_array_record_extra_elements() {

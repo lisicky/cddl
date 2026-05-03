@@ -3295,7 +3295,7 @@ where
                   .get_or_insert(vec![k.clone()])
                   .push(k.clone());
                 self.object_value = Some(v.clone());
-                let _ = write!(self.state.data_location, "/{:?}", v);
+                let _ = write!(self.state.data_location, "/{}", format_path_key(k));
               } else {
                 self.add_error(format!("map requires entry key of type {}", ident));
               }
@@ -3309,7 +3309,7 @@ where
                   .get_or_insert(vec![k.clone()])
                   .push(k.clone());
                 self.object_value = Some(v.clone());
-                let _ = write!(self.state.data_location, "/{:?}", v);
+                let _ = write!(self.state.data_location, "/{}", format_path_key(k));
               } else {
                 self.add_error(format!("map requires entry key of type {}", ident));
               }
@@ -3323,7 +3323,7 @@ where
                   .get_or_insert(vec![k.clone()])
                   .push(k.clone());
                 self.object_value = Some(v.clone());
-                let _ = write!(self.state.data_location, "/{:?}", v);
+                let _ = write!(self.state.data_location, "/{}", format_path_key(k));
               } else {
                 self.add_error(format!("map requires entry key of type {}", ident));
               }
@@ -3337,7 +3337,7 @@ where
                   .get_or_insert(vec![k.clone()])
                   .push(k.clone());
                 self.object_value = Some(v.clone());
-                let _ = write!(self.state.data_location, "/{:?}", v);
+                let _ = write!(self.state.data_location, "/{}", format_path_key(k));
               } else {
                 self.add_error(format!("map requires entry key of type {}", ident));
               }
@@ -3351,7 +3351,7 @@ where
                   .get_or_insert(vec![k.clone()])
                   .push(k.clone());
                 self.object_value = Some(v.clone());
-                let _ = write!(self.state.data_location, "/{:?}", v);
+                let _ = write!(self.state.data_location, "/{}", format_path_key(k));
               } else {
                 self.add_error(format!("map requires entry key of type {}", ident));
               }
@@ -3365,7 +3365,7 @@ where
                   .get_or_insert(vec![k.clone()])
                   .push(k.clone());
                 self.object_value = Some(v.clone());
-                let _ = write!(self.state.data_location, "/{:?}", v);
+                let _ = write!(self.state.data_location, "/{}", format_path_key(k));
               } else {
                 self.add_error(format!("map requires entry key of type {}", ident));
               }
@@ -3785,7 +3785,7 @@ where
                   .get_or_insert(vec![k.clone()])
                   .push(k.clone());
                 self.object_value = Some(v.clone());
-                let _ = write!(self.state.data_location, "/{:?}", v);
+                let _ = write!(self.state.data_location, "/{}", format_path_key(k));
               } else if (!matches!(occur, Occur::ZeroOrMore { .. }) && m.is_empty())
                 || (matches!(occur, Occur::ZeroOrMore { .. }) && !m.is_empty())
               {
@@ -3802,7 +3802,7 @@ where
                   .get_or_insert(vec![k.clone()])
                   .push(k.clone());
                 self.object_value = Some(v.clone());
-                let _ = write!(self.state.data_location, "/{:?}", v);
+                let _ = write!(self.state.data_location, "/{}", format_path_key(k));
               } else if (!matches!(occur, Occur::ZeroOrMore { .. }) && m.is_empty())
                 || (matches!(occur, Occur::ZeroOrMore { .. }) && !m.is_empty())
               {
@@ -3818,7 +3818,7 @@ where
                   .get_or_insert(vec![k.clone()])
                   .push(k.clone());
                 self.object_value = Some(v.clone());
-                let _ = write!(self.state.data_location, "/{:?}", v);
+                let _ = write!(self.state.data_location, "/{}", format_path_key(k));
               } else if (!matches!(occur, Occur::ZeroOrMore { .. }) && m.is_empty())
                 || (matches!(occur, Occur::ZeroOrMore { .. }) && !m.is_empty())
               {
@@ -3834,7 +3834,7 @@ where
                   .get_or_insert(vec![k.clone()])
                   .push(k.clone());
                 self.object_value = Some(v.clone());
-                let _ = write!(self.state.data_location, "/{:?}", v);
+                let _ = write!(self.state.data_location, "/{}", format_path_key(k));
               } else if (!matches!(occur, Occur::ZeroOrMore { .. }) && m.is_empty())
                 || (matches!(occur, Occur::ZeroOrMore { .. }) && !m.is_empty())
               {
@@ -3850,7 +3850,7 @@ where
                   .get_or_insert(vec![k.clone()])
                   .push(k.clone());
                 self.object_value = Some(v.clone());
-                let _ = write!(self.state.data_location, "/{:?}", v);
+                let _ = write!(self.state.data_location, "/{}", format_path_key(k));
               } else if (!matches!(occur, Occur::ZeroOrMore { .. }) && m.is_empty())
                 || (matches!(occur, Occur::ZeroOrMore { .. }) && !m.is_empty())
               {
@@ -3866,7 +3866,7 @@ where
                   .get_or_insert(vec![k.clone()])
                   .push(k.clone());
                 self.object_value = Some(v.clone());
-                let _ = write!(self.state.data_location, "/{:?}", v);
+                let _ = write!(self.state.data_location, "/{}", format_path_key(k));
               } else if (!matches!(occur, Occur::ZeroOrMore { .. }) && m.is_empty())
                 || (matches!(occur, Occur::ZeroOrMore { .. }) && !m.is_empty())
               {
@@ -4758,6 +4758,30 @@ fn extract_bitfield_widths(controller: &Type2) -> Option<u128> {
     Some(total_bits)
   } else {
     None
+  }
+}
+
+/// Render a CBOR map key as a short, readable path component for cbor_location
+/// strings (used in error messages). Avoids dumping nested-Map debug output
+/// for keys that aren't typical map keys, but keeps best-effort fallback.
+fn format_path_key(k: &Value) -> String {
+  match k {
+    Value::Text(s) => format!("\"{}\"", s),
+    Value::Integer(i) => {
+      let n: i128 = (*i).into();
+      n.to_string()
+    }
+    Value::Bytes(b) => {
+      let mut s = String::from("h'");
+      for byte in b {
+        let _ = write!(s, "{:02x}", byte);
+      }
+      s.push('\'');
+      s
+    }
+    Value::Bool(b) => b.to_string(),
+    Value::Null => "null".to_string(),
+    other => format!("{:?}", other),
   }
 }
 

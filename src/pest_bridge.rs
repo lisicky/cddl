@@ -466,11 +466,206 @@ const STANDARD_PRELUDE: &[&str] = &[
   "undefined",
 ];
 
+/// Scan the source for `; ... \n` comments, skipping over text and byte-string
+/// literals so that semicolons inside `"..."` or `'...'` aren't mistaken for
+/// comment starts. Returns each comment's byte range plus its text payload
+/// (without the leading `;` and without the trailing newline).
+#[cfg(feature = "ast-comments")]
+#[cfg(feature = "ast-span")]
+fn harvest_comments(input: &str) -> Vec<(usize, usize, &str)> {
+  let bytes = input.as_bytes();
+  let mut comments = Vec::new();
+  let mut i = 0;
+  while i < bytes.len() {
+    match bytes[i] {
+      b';' => {
+        let start = i;
+        i += 1;
+        while i < bytes.len() && bytes[i] != b'\n' {
+          i += 1;
+        }
+        let content = &input[start + 1..i];
+        comments.push((start, i, content));
+      }
+      b'"' => {
+        i += 1;
+        while i < bytes.len() && bytes[i] != b'"' {
+          if bytes[i] == b'\\' && i + 1 < bytes.len() {
+            i += 1;
+          }
+          i += 1;
+        }
+        if i < bytes.len() {
+          i += 1;
+        }
+      }
+      b'\'' => {
+        i += 1;
+        while i < bytes.len() && bytes[i] != b'\'' {
+          if bytes[i] == b'\\' && i + 1 < bytes.len() {
+            i += 1;
+          }
+          i += 1;
+        }
+        if i < bytes.len() {
+          i += 1;
+        }
+      }
+      _ => i += 1,
+    }
+  }
+  comments
+}
+
+/// Find the byte offset of the last semantic character of a rule (i.e. the
+/// last byte that is neither whitespace nor part of a `;`-comment), starting
+/// from `span_start` and bounded by `span_end`. Used to distinguish between
+/// comments that are *inside* a rule body and comments that come *after* a
+/// rule's last meaningful token.
+#[cfg(feature = "ast-comments")]
+#[cfg(feature = "ast-span")]
+fn rule_body_end(input: &str, span_start: usize, span_end: usize) -> usize {
+  let bytes = input.as_bytes();
+  let mut i = span_start;
+  let mut last_real = span_start;
+  let mut in_string: Option<u8> = None;
+  while i < span_end {
+    let c = bytes[i];
+    if let Some(quote) = in_string {
+      if c == b'\\' && i + 1 < span_end {
+        i += 2;
+        last_real = i;
+        continue;
+      }
+      if c == quote {
+        in_string = None;
+      }
+      i += 1;
+      last_real = i;
+    } else if c == b';' {
+      while i < span_end && bytes[i] != b'\n' {
+        i += 1;
+      }
+    } else if c == b' ' || c == b'\t' || c == b'\n' || c == b'\r' {
+      i += 1;
+    } else if c == b'"' || c == b'\'' {
+      in_string = Some(c);
+      i += 1;
+      last_real = i;
+    } else {
+      i += 1;
+      last_real = i;
+    }
+  }
+  last_real
+}
+
+/// Walk the harvested comments and attach the ones that fall *outside* a
+/// rule's body either to `CDDL.comments` (everything before the first rule's
+/// start) or to the previous rule's `comments_after_rule` (everything between
+/// a rule body's end and the next rule's start, or after the last rule).
+///
+/// Comments that fall *inside* a rule body (member-key trailing comments,
+/// inline group entry comments, etc.) are not yet attached and are silently
+/// dropped — that requires walking deeper into `Group`/`GroupChoice` and is a
+/// larger surgery for a future change.
+#[cfg(feature = "ast-comments")]
+#[cfg(feature = "ast-span")]
+fn attach_outer_comments<'a>(cddl: &mut ast::CDDL<'a>, input: &'a str) {
+  let comments = harvest_comments(input);
+  if comments.is_empty() {
+    return;
+  }
+
+  // Snapshot rule (start, real_body_end) per rule index.
+  let rule_bounds: Vec<(usize, usize)> = cddl
+    .rules
+    .iter()
+    .map(|r| {
+      let span = match r {
+        ast::Rule::Type { span, .. } => *span,
+        ast::Rule::Group { span, .. } => *span,
+      };
+      let body_end = rule_body_end(input, span.0, span.1);
+      (span.0, body_end)
+    })
+    .collect();
+
+  let mut header: Vec<&'a str> = Vec::new();
+  let mut after: Vec<Vec<&'a str>> = vec![Vec::new(); cddl.rules.len()];
+  let mut between_buffer_for_next: Vec<Vec<&'a str>> = vec![Vec::new(); cddl.rules.len()];
+
+  for (cs, _ce, content) in comments {
+    // Comments inside any rule's body (member-key trailing, inline group
+    // entries, etc.) are not yet attached — leaving them at the outer level
+    // would dump them next to the wrong rule. Drop them silently rather than
+    // mis-place them; inline attachment is a separate pass.
+    let inside_body = rule_bounds
+      .iter()
+      .any(|(start, body_end)| *start <= cs && cs < *body_end);
+    if inside_body {
+      continue;
+    }
+
+    if rule_bounds.is_empty() || cs < rule_bounds[0].0 {
+      header.push(content);
+      continue;
+    }
+
+    let prev_idx = rule_bounds
+      .iter()
+      .rposition(|(_, body_end)| *body_end <= cs);
+    match prev_idx {
+      Some(pi) => between_buffer_for_next[pi].push(content),
+      None => header.push(content),
+    }
+  }
+
+  for (i, mut bucket) in between_buffer_for_next.into_iter().enumerate() {
+    after[i].append(&mut bucket);
+  }
+
+  if !header.is_empty() {
+    let mut existing = cddl.comments.take().map(|c| c.0).unwrap_or_default();
+    existing.extend(header);
+    cddl.comments = Some(ast::Comments(existing));
+  }
+
+  for (i, rule) in cddl.rules.iter_mut().enumerate() {
+    if after[i].is_empty() {
+      continue;
+    }
+    let bucket = std::mem::take(&mut after[i]);
+    match rule {
+      ast::Rule::Type {
+        comments_after_rule,
+        ..
+      } => {
+        let mut existing = comments_after_rule.take().map(|c| c.0).unwrap_or_default();
+        existing.extend(bucket);
+        *comments_after_rule = Some(ast::Comments(existing));
+      }
+      ast::Rule::Group {
+        comments_after_rule,
+        ..
+      } => {
+        let mut existing = comments_after_rule.take().map(|c| c.0).unwrap_or_default();
+        existing.extend(bucket);
+        *comments_after_rule = Some(ast::Comments(existing));
+      }
+    }
+  }
+}
+
 /// Parse CDDL from string using Pest parser and convert to AST
 pub fn cddl_from_pest_str<'a>(input: &'a str) -> Result<ast::CDDL<'a>, Error> {
   let pairs = CddlParser::parse(Rule::cddl, input).map_err(|e| convert_pest_error(e, input))?;
 
-  convert_cddl(pairs, input)
+  let mut cddl = convert_cddl(pairs, input)?;
+  #[cfg(feature = "ast-comments")]
+  #[cfg(feature = "ast-span")]
+  attach_outer_comments(&mut cddl, input);
+  Ok(cddl)
 }
 
 /// Parse CDDL from string, converting to AST and checking for undefined references.
@@ -486,7 +681,10 @@ pub fn cddl_from_pest_str_checked<'a>(input: &'a str) -> Result<ast::CDDL<'a>, E
   // Clone pairs so we can check for undefined references after AST conversion
   let pairs_for_ref_check = pairs.clone();
 
-  let cddl = convert_cddl(pairs, input)?;
+  let mut cddl = convert_cddl(pairs, input)?;
+  #[cfg(feature = "ast-comments")]
+  #[cfg(feature = "ast-span")]
+  attach_outer_comments(&mut cddl, input);
 
   // Check for undefined references
   if let Some((name, _pos)) = find_first_undefined_reference(pairs_for_ref_check, input) {

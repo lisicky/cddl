@@ -782,6 +782,41 @@ fn validate_negative_below_i64_min() {
   assert!(validate_cbor_from_slice(cddl_input, &cbor_encode(&v_neg_one), None).is_err());
 }
 
+// Regression: when ALL type-choice alternatives fail, the reported errors
+// must carry the deep cbor_location of the failing place inside each choice
+// (and the path must show map keys, not raw value debug output).
+#[test]
+fn type_choice_failure_reports_deep_path() {
+  let cddl = r#"
+    start = uint / outer<int>
+    outer<v> = {* bytes => {+ bytes => v}}
+  "#;
+
+  let v = Value::Map(vec![(
+    Value::Bytes(vec![0xab]),
+    Value::Map(vec![(
+      Value::Bytes(vec![0xcd]),
+      Value::Text("not-int".into()),
+    )]),
+  )]);
+  let bytes = cbor_encode(&v);
+  let err = validate_cbor_from_slice(cddl, &bytes, None).expect_err("expected validation failure");
+  let msg = err.to_string();
+
+  // The deep failure path must be present, and it must use the key, not a
+  // dump of the surrounding map's debug repr.
+  assert!(
+    msg.contains("/h'ab'"),
+    "expected path to walk into the bytes-keyed entry, got:\n{}",
+    msg
+  );
+  assert!(
+    !msg.contains("/Map(["),
+    "expected no `Map([...])` debug-dump segment in cbor_location, got:\n{}",
+    msg
+  );
+}
+
 // Regression: integer literals up to u64::MAX must parse and validate
 // correctly on every target (the AST stores them as u64/i128, not usize/isize).
 #[test]
