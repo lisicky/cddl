@@ -782,6 +782,83 @@ fn validate_negative_below_i64_min() {
   assert!(validate_cbor_from_slice(cddl_input, &cbor_encode(&v_neg_one), None).is_err());
 }
 
+// Regression: an array whose group definition has `?` (Optional) entries
+// must accept every length in `mandatory..=mandatory+optional`, not only the
+// fixed maximum. `entry_counts_from_group` previously only inspected the
+// occur of the second entry (idx==1), so optionals at any other position
+// produced a single fixed count and shorter inputs were rejected.
+#[test]
+fn optional_entry_length_accepts_short_arrays() {
+  let cddl = r#"start = [a: int, b: tstr, ? c: bytes]"#;
+
+  // Length 2 (optional absent) must pass.
+  let v = Value::Array(vec![Value::Integer(1.into()), Value::Text("ok".into())]);
+  validate_cbor_from_slice(cddl, &cbor_encode(&v), None).unwrap();
+
+  // Length 3 (optional present) must pass.
+  let v = Value::Array(vec![
+    Value::Integer(1.into()),
+    Value::Text("ok".into()),
+    Value::Bytes(vec![0xde, 0xad]),
+  ]);
+  validate_cbor_from_slice(cddl, &cbor_encode(&v), None).unwrap();
+
+  // Length 1 must fail.
+  let v = Value::Array(vec![Value::Integer(1.into())]);
+  assert!(validate_cbor_from_slice(cddl, &cbor_encode(&v), None).is_err());
+
+  // Length 4 must fail.
+  let v = Value::Array(vec![
+    Value::Integer(1.into()),
+    Value::Text("ok".into()),
+    Value::Bytes(vec![0xde, 0xad]),
+    Value::Integer(99.into()),
+  ]);
+  assert!(validate_cbor_from_slice(cddl, &cbor_encode(&v), None).is_err());
+}
+
+// Regression: bareword keys inside an array (e.g. `[a: int, b: tstr]`) are
+// pure documentation per RFC 8610 §3.5.2. When the bareword identifier
+// happens to also name a rule whose body is an array (e.g. `pair` =
+// `[fst, snd]`), the validator must NOT short-circuit by re-running that
+// rule's body against the surrounding array. It used to, which made
+// `[a, b, c, pair]` reject every record because the validator compared the
+// 4-element record against the 2-element pair.
+#[test]
+fn array_member_key_bareword_is_documentation_only() {
+  let cddl = r#"
+    start = [+ record]
+    record = [tag: tag_kind, idx: uint .size 4, payload: payload_t, pair: pair]
+    tag_kind = 0 / 1 / 2 / 3 / 4
+    payload_t = #6.121([])
+    pair = [fst: uint, snd: uint]
+  "#;
+
+  let valid = Value::Array(vec![Value::Array(vec![
+    Value::Integer(1.into()),
+    Value::Integer(0.into()),
+    Value::Tag(121, Box::new(Value::Array(vec![]))),
+    Value::Array(vec![Value::Integer(7.into()), Value::Integer(11.into())]),
+  ])]);
+  validate_cbor_from_slice(cddl, &cbor_encode(&valid), None).unwrap();
+
+  // Real failure should still be reported with a deep path: corrupt the
+  // inner pair (1 element instead of 2).
+  let invalid = Value::Array(vec![Value::Array(vec![
+    Value::Integer(1.into()),
+    Value::Integer(0.into()),
+    Value::Tag(121, Box::new(Value::Array(vec![]))),
+    Value::Array(vec![Value::Integer(7.into())]),
+  ])]);
+  let err = validate_cbor_from_slice(cddl, &cbor_encode(&invalid), None).expect_err("must fail");
+  let msg = err.to_string();
+  assert!(
+    msg.contains("/0/3"),
+    "expected deep path /0/3 in error, got:\n{}",
+    msg
+  );
+}
+
 // Regression: `[+ T]` / `[* T]` over a referenced rule must validate EVERY
 // element of the cbor array, not just `cbor[group_entry_idx]`. The earlier
 // "nested array in literal position" fast-path inside `visit_type` together

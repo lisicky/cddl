@@ -3134,12 +3134,18 @@ where
     }
 
     // Special case for array values - check if we're in an array context and this
-    // is a reference to another array type
-    if let Value::Array(_) = &self.cbor {
-      if let Some(Rule::Type { rule, .. }) = rule_from_ident(self.state.cddl, ident) {
-        for tc in rule.value.type_choices.iter() {
-          if let Type2::Array { .. } = &tc.type1.type2 {
-            return self.visit_type_choice(tc);
+    // is a reference to another array type. Skip when this identifier is being
+    // examined as a member-key bareword (RFC 8610 §3.5.2: bareword keys in
+    // arrays are pure documentation), since dispatching here would re-run the
+    // referenced array rule against the surrounding array, not against the
+    // value at the current group_entry_idx.
+    if !self.state.is_member_key && !self.state.is_colon_shortcut_present {
+      if let Value::Array(_) = &self.cbor {
+        if let Some(Rule::Type { rule, .. }) = rule_from_ident(self.state.cddl, ident) {
+          for tc in rule.value.type_choices.iter() {
+            if let Type2::Array { .. } = &tc.type1.type2 {
+              return self.visit_type_choice(tc);
+            }
           }
         }
       }

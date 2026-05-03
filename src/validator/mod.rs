@@ -1245,6 +1245,10 @@ pub fn entry_counts_from_group<'a, 'b: 'a>(
 
   for gc in group.group_choices.iter() {
     let mut count = 0;
+    // Number of entries in this group choice marked `?` (Optional). Each
+    // such entry can independently be present or absent, so the resulting
+    // valid array length is anywhere in `count..=count+optional`.
+    let mut optional = 0u64;
     let mut entry_occurrence = None;
     let mut skip_final_push = false;
 
@@ -1257,7 +1261,11 @@ pub fn entry_counts_from_group<'a, 'b: 'a>(
             }
           }
 
-          count += 1;
+          if entry_is_optional(ge.occur.as_ref().map(|o| &o.occur)) {
+            optional += 1;
+          } else {
+            count += 1;
+          }
         }
         GroupEntry::InlineGroup { group, occur, .. } => {
           if idx == 1 {
@@ -1311,7 +1319,11 @@ pub fn entry_counts_from_group<'a, 'b: 'a>(
               entry_counts.append(&mut entry_counts_from_group(cddl, &gr.entry.clone().into()));
             }
           } else if group_choice_alternates_from_ident(cddl, &ge.name).is_empty() {
-            count += 1;
+            if entry_is_optional(ge.occur.as_ref().map(|o| &o.occur)) {
+              optional += 1;
+            } else {
+              count += 1;
+            }
           } else {
             for ge in group_choice_alternates_from_ident(cddl, &ge.name).into_iter() {
               entry_counts.append(&mut entry_counts_from_group(cddl, &ge.clone().into()));
@@ -1322,14 +1334,40 @@ pub fn entry_counts_from_group<'a, 'b: 'a>(
     }
 
     if !skip_final_push {
-      entry_counts.push(EntryCount {
-        count,
-        entry_occurrence,
-      });
+      // Expand optional entries: any subset of them may be present, so the
+      // valid lengths form a contiguous range count..=count+optional.
+      // Encode every length in that range as its own EntryCount so that
+      // validate_entry_count's `num_entries == ec.count` check covers them
+      // all without changes elsewhere.
+      if optional == 0 {
+        entry_counts.push(EntryCount {
+          count,
+          entry_occurrence,
+        });
+      } else {
+        for i in 0..=optional {
+          entry_counts.push(EntryCount {
+            count: count + i,
+            entry_occurrence,
+          });
+        }
+      }
     }
   }
 
   entry_counts
+}
+
+#[cfg(any(feature = "cbor", feature = "json"))]
+fn entry_is_optional(occur: Option<&Occur>) -> bool {
+  #[cfg(feature = "ast-span")]
+  {
+    matches!(occur, Some(Occur::Optional { .. }))
+  }
+  #[cfg(not(feature = "ast-span"))]
+  {
+    matches!(occur, Some(Occur::Optional {}))
+  }
 }
 
 /// Validate the number of entries given an array of possible valid entry counts
