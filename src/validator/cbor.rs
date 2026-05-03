@@ -317,30 +317,15 @@ impl<'a> CBORValidator<'a> {
               }
 
               if self.state.is_multi_type_choice && cv.errors.is_empty() {
-                if let Some(indices) = &mut self.state.valid_array_items {
-                  indices.push(idx);
-                } else {
-                  // Element index out of bounds, add error only if occurrence requires it
-                  match self.state.occurrence {
-                    #[cfg(feature = "ast-span")]
-                    Some(Occur::OneOrMore { .. }) | Some(Occur::Exact { .. }) => {
-                      self.add_error(format!(
-                        "expected array element at index {}, but array only has {} elements",
-                        idx,
-                        a.len()
-                      ));
-                    }
-                    #[cfg(not(feature = "ast-span"))]
-                    Some(Occur::OneOrMore {}) | Some(Occur::Exact { .. }) => {
-                      self.add_error(format!(
-                        "expected array element at index {}, but array only has {} elements",
-                        idx,
-                        a.len()
-                      ));
-                    }
-                    _ => {} // Do nothing if occurrence is Optional, ZeroOrMore, or None
-                  }
-                  return Ok(());
+                // Track that this index validated under the current
+                // type-choice so that other choices can skip it. Lazy-init
+                // the Vec — earlier code mistakenly treated `None` as an
+                // out-of-bounds error, which fires false negatives whenever
+                // a homogeneous-occurrence array iteration finishes
+                // successfully under multi-type-choice context.
+                match &mut self.state.valid_array_items {
+                  Some(indices) => indices.push(idx),
+                  None => self.state.valid_array_items = Some(vec![idx]),
                 }
                 continue;
               }
@@ -3111,6 +3096,21 @@ where
     // member key
     if !self.state.is_colon_shortcut_present {
       if let Some(r) = rule_from_ident(self.state.cddl, ident) {
+        // If we're applying this ident under a homogeneous occurrence (`* T`,
+        // `+ T`) to an Array, route through `validate_array_items` first so
+        // that EVERY element gets validated against the rule. Otherwise the
+        // chain `visit_rule -> visit_type_rule -> visit_type` may hit the
+        // "nested array in literal position" fast-path inside `visit_type`
+        // and validate only `cbor[group_entry_idx]`, silently accepting
+        // mismatches in the remaining elements.
+        let homogeneous = matches!(
+          self.state.occurrence,
+          Some(Occur::ZeroOrMore { .. }) | Some(Occur::OneOrMore { .. })
+        );
+        if homogeneous && matches!(self.cbor, Value::Array(_)) {
+          return self.validate_array_items(&ArrayItemToken::Identifier(ident));
+        }
+
         // Check for recursion to prevent stack overflow
         let rule_key = ident.ident.to_string();
         if self.state.visited_rules.contains(&rule_key) {

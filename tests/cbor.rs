@@ -782,6 +782,50 @@ fn validate_negative_below_i64_min() {
   assert!(validate_cbor_from_slice(cddl_input, &cbor_encode(&v_neg_one), None).is_err());
 }
 
+// Regression: `[+ T]` / `[* T]` over a referenced rule must validate EVERY
+// element of the cbor array, not just `cbor[group_entry_idx]`. The earlier
+// "nested array in literal position" fast-path inside `visit_type` together
+// with the multi-type-choice valid_array_items handling caused later
+// elements to be silently accepted.
+#[test]
+fn homogeneous_array_iterates_every_element() {
+  let cddl = r#"
+    start = nonempty_set<inner>
+    nonempty_set<a> = #6.258([+ a]) / [+ a]
+    inner = [int, tstr]
+  "#;
+
+  let inner_good = Value::Array(vec![Value::Integer(1.into()), Value::Text("ok".into())]);
+  let inner_bad = Value::Array(vec![Value::Integer(2.into()), Value::Integer(99.into())]);
+
+  // Both good — must pass.
+  let v = Value::Array(vec![inner_good.clone(), inner_good.clone()]);
+  validate_cbor_from_slice(cddl, &cbor_encode(&v), None).unwrap();
+
+  // Good then bad — must fail with deep path /1/1.
+  let v = Value::Array(vec![inner_good.clone(), inner_bad.clone()]);
+  let err =
+    validate_cbor_from_slice(cddl, &cbor_encode(&v), None).expect_err("expected validation error");
+  let msg = err.to_string();
+  assert!(
+    msg.contains("/1/1"),
+    "expected deep path /1/1 in failure message, got:\n{}",
+    msg
+  );
+
+  // Plain [+ int] homogeneous on a primitive must also reject mid-array
+  // mismatches.
+  let cddl_simple = r#"start = [+ int]"#;
+  let v = Value::Array(vec![
+    Value::Integer(1.into()),
+    Value::Text("oops".into()),
+    Value::Integer(3.into()),
+  ]);
+  let err = validate_cbor_from_slice(cddl_simple, &cbor_encode(&v), None)
+    .expect_err("expected validation error");
+  assert!(err.to_string().contains("/1"));
+}
+
 // Regression: when ALL type-choice alternatives fail, the reported errors
 // must carry the deep cbor_location of the failing place inside each choice
 // (and the path must show map keys, not raw value debug output).
