@@ -400,7 +400,10 @@ impl<'a> CBORValidator<'a> {
               } else if !allow_empty_array {
                 self.add_error(token.error_msg(Some(idx)));
               }
-            } else if !self.state.is_multi_type_choice {
+            } else if !self.state.is_multi_type_choice || self.state.entry_counts.is_none() {
+              // When entry_counts is None we are not inside an array-group
+              // context, so the array can't be element-iterated against this
+              // primitive token; the array itself does not match the type.
               self.add_error(format!("{}, got {:?}", token.error_msg(None), self.cbor));
             }
           }
@@ -694,6 +697,21 @@ where
 
       // If this choice validates successfully (no errors), use it
       if choice_validator.errors.is_empty() {
+        // Propagate state collected while validating against a member key
+        // (e.g. control operators on a typed key) so the caller's
+        // visit_value_member_key_entry can iterate the matching values.
+        if self.state.is_member_key {
+          if choice_validator.values_to_validate.is_some() {
+            self.values_to_validate = choice_validator.values_to_validate.take();
+          }
+          if choice_validator.object_value.is_some() {
+            self.object_value = choice_validator.object_value.take();
+          }
+          if choice_validator.validated_keys.is_some() {
+            self.validated_keys = choice_validator.validated_keys.take();
+          }
+        }
+
         #[cfg(feature = "additional-controls")]
         if !choice_validator.state.has_feature_errors
           || choice_validator.state.disabled_features.is_some()
@@ -934,6 +952,52 @@ where
     ctrl: ControlOperator,
     controller: &Type2<'a>,
   ) -> visitor::Result<Error<T>> {
+    // When iterating member keys against a Map, the control operator targets
+    // individual keys, not the surrounding map. Delegate to target-type
+    // matching against the keys (as visit_identifier does); the controller
+    // constraint is not enforced per-key here, matching existing behavior for
+    // plain prelude member keys.
+    if self.state.is_member_key
+      && matches!(self.cbor, Value::Map(_))
+      && matches!(target, Type2::Typename { .. })
+    {
+      let _ = controller;
+      return self.visit_type2(target);
+    }
+
+    // When inside an array-group context (entry_counts + group_entry_idx set),
+    // the control operator applies to the element at the current index, not
+    // to the surrounding array. Validate the indexed element against the full
+    // control-op semantics in a sub-validator.
+    if matches!(target, Type2::Typename { .. }) {
+      if let (Value::Array(a), Some(idx)) = (&self.cbor, self.state.group_entry_idx) {
+        if self.state.entry_counts.is_some() {
+          if let Some(elem) = a.get(idx) {
+            #[cfg(all(feature = "additional-controls", target_arch = "wasm32"))]
+            let mut cv = CBORValidator::new(
+              self.state.cddl,
+              elem.clone(),
+              self.state.enabled_features.clone(),
+            );
+            #[cfg(all(feature = "additional-controls", not(target_arch = "wasm32")))]
+            let mut cv =
+              CBORValidator::new(self.state.cddl, elem.clone(), self.state.enabled_features);
+            #[cfg(not(feature = "additional-controls"))]
+            let mut cv = CBORValidator::new(self.state.cddl, elem.clone());
+
+            cv.state.generic_rules = self.state.generic_rules.clone();
+            cv.state.eval_generic_rule = self.state.eval_generic_rule;
+            cv.state.is_multi_type_choice = self.state.is_multi_type_choice;
+            cv.state.is_multi_group_choice = self.state.is_multi_group_choice;
+            cv.state.type_group_name_entry = self.state.type_group_name_entry;
+            cv.visit_control_operator(target, ctrl, controller)?;
+            self.errors.append(&mut cv.errors);
+            return Ok(());
+          }
+        }
+      }
+    }
+
     if let Type2::Typename {
       ident: target_ident,
       ..
@@ -3814,10 +3878,16 @@ where
               .in_standard_prelude()
               .is_some()
             {
-              self.add_error(format!(
-                "expected object value of type {}, got object",
-                ident.ident
-              ));
+              // When validating_value is true, an outer member-key pass already
+              // collected `values_to_validate` for this prelude key type, and a
+              // child validator is now walking the entry's value type. We must
+              // not treat the surrounding map as a mismatched value here.
+              if !self.validating_value {
+                self.add_error(format!(
+                  "expected object value of type {}, got object",
+                  ident.ident
+                ));
+              }
               return Ok(());
             }
 
@@ -4069,20 +4139,31 @@ where
           });
         }
 
+        // When this entry sits inside an array, walk the element at the
+        // current group_entry_idx rather than the surrounding array; otherwise
+        // the rule body (likely a Map/primitive type) is matched against the
+        // wrong CBOR value and silently passes invalid input.
+        let cv_cbor = if let (Value::Array(a), Some(idx)) = (&self.cbor, self.state.group_entry_idx)
+        {
+          if let Some(elem) = a.get(idx) {
+            elem.clone()
+          } else {
+            self.cbor.clone()
+          }
+        } else {
+          self.cbor.clone()
+        };
+
         #[cfg(all(feature = "additional-controls", target_arch = "wasm32"))]
         let mut cv = CBORValidator::new(
           self.state.cddl,
-          self.cbor.clone(),
+          cv_cbor,
           self.state.enabled_features.clone(),
         );
         #[cfg(all(feature = "additional-controls", not(target_arch = "wasm32")))]
-        let mut cv = CBORValidator::new(
-          self.state.cddl,
-          self.cbor.clone(),
-          self.state.enabled_features,
-        );
+        let mut cv = CBORValidator::new(self.state.cddl, cv_cbor, self.state.enabled_features);
         #[cfg(not(feature = "additional-controls"))]
-        let mut cv = CBORValidator::new(self.state.cddl, self.cbor.clone());
+        let mut cv = CBORValidator::new(self.state.cddl, cv_cbor);
 
         cv.state.generic_rules = self.state.generic_rules.clone();
         cv.state.eval_generic_rule = Some(entry.name.ident);

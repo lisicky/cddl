@@ -639,3 +639,156 @@ fn validate_decfrac_and_bigfloat() -> Result<(), Box<dyn Error>> {
 
   Ok(())
 }
+
+fn cbor_encode(val: &Value) -> Vec<u8> {
+  let mut bytes = Vec::new();
+  ciborium::ser::into_writer(val, &mut bytes).unwrap();
+  bytes
+}
+
+// Regression: nested map under `* k => {+ k2 => v}` must validate
+// (RFC 8610 §3.5).
+#[test]
+fn validate_nested_map_member_value() {
+  let cddl_input = r#"start = {* bytes => {+ bytes => uint}}"#;
+
+  let valid = Value::Map(vec![(
+    Value::Bytes(vec![0x61, 0x62]),
+    Value::Map(vec![(Value::Bytes(vec![0x63]), Value::Integer(5.into()))]),
+  )]);
+  let bytes = cbor_encode(&valid);
+  validate_cbor_from_slice(cddl_input, &bytes, None).unwrap();
+
+  // Inner value must be a map, not a uint.
+  let invalid = Value::Map(vec![(
+    Value::Bytes(vec![0x61, 0x62]),
+    Value::Integer(5.into()),
+  )]);
+  let bytes = cbor_encode(&invalid);
+  assert!(validate_cbor_from_slice(cddl_input, &bytes, None).is_err());
+}
+
+// Regression: a typename with generic args used as a map type
+// (`outer<inner_value>`) must resolve to its body, not get compared whole
+// against `bstr` via the keyed-map's outer key type.
+#[test]
+fn validate_generic_typename_as_map() {
+  let cddl_input = r#"
+    start = outer<positive>
+    outer<v> = {* outer_key => {+ inner_key => v}}
+    outer_key = bytes .size 4
+    inner_key = bytes .size (0 .. 4)
+    positive = 1 .. 18446744073709551615
+  "#;
+
+  // Valid: 4-byte outer key, 3-byte inner key, value 1.
+  let valid = Value::Map(vec![(
+    Value::Bytes(vec![0x01, 0x02, 0x03, 0x04]),
+    Value::Map(vec![(
+      Value::Bytes(vec![0x66, 0x6f, 0x6f]),
+      Value::Integer(1.into()),
+    )]),
+  )]);
+  let bytes = cbor_encode(&valid);
+  validate_cbor_from_slice(cddl_input, &bytes, None).unwrap();
+
+  // Invalid: value 0 violates positive's range.
+  let invalid_zero = Value::Map(vec![(
+    Value::Bytes(vec![0x01, 0x02, 0x03, 0x04]),
+    Value::Map(vec![(
+      Value::Bytes(vec![0x66, 0x6f, 0x6f]),
+      Value::Integer(0.into()),
+    )]),
+  )]);
+  let bytes = cbor_encode(&invalid_zero);
+  assert!(validate_cbor_from_slice(cddl_input, &bytes, None).is_err());
+}
+
+// Regression: array entries past index 0 must still be validated when the
+// type is `[primitive, generic_typename<arg>]`.
+#[test]
+fn validate_array_with_generic_typename_entry() {
+  let cddl_input = r#"
+    start = [counter, outer<positive>]
+    counter = uint
+    outer<v> = {* outer_key => {+ inner_key => v}}
+    outer_key = bytes .size 4
+    inner_key = bytes .size (0 .. 4)
+    positive = 1 .. 18446744073709551615
+  "#;
+
+  // Valid: [counter, outer-map].
+  let valid_pair = Value::Array(vec![
+    Value::Integer(1_000_000.into()),
+    Value::Map(vec![(
+      Value::Bytes(vec![0x01, 0x02, 0x03, 0x04]),
+      Value::Map(vec![(
+        Value::Bytes(vec![0x66, 0x6f, 0x6f]),
+        Value::Integer(1.into()),
+      )]),
+    )]),
+  ]);
+  let bytes = cbor_encode(&valid_pair);
+  validate_cbor_from_slice(cddl_input, &bytes, None).unwrap();
+
+  // Invalid: second element is a string instead of a map.
+  let invalid_garbage = Value::Array(vec![
+    Value::Integer(1.into()),
+    Value::Text("wrong".to_string()),
+  ]);
+  let bytes = cbor_encode(&invalid_garbage);
+  assert!(validate_cbor_from_slice(cddl_input, &bytes, None).is_err());
+
+  // Invalid: second element is a map with the wrong inner shape (uint, not nested map).
+  let invalid_inner = Value::Array(vec![
+    Value::Integer(1.into()),
+    Value::Map(vec![(
+      Value::Bytes(vec![0x01, 0x02, 0x03, 0x04]),
+      Value::Integer(5.into()),
+    )]),
+  ]);
+  let bytes = cbor_encode(&invalid_inner);
+  assert!(validate_cbor_from_slice(cddl_input, &bytes, None).is_err());
+
+  // Invalid: zero leaf value violates positive.
+  let invalid_zero = Value::Array(vec![
+    Value::Integer(1.into()),
+    Value::Map(vec![(
+      Value::Bytes(vec![0x01, 0x02, 0x03, 0x04]),
+      Value::Map(vec![(
+        Value::Bytes(vec![0x66, 0x6f, 0x6f]),
+        Value::Integer(0.into()),
+      )]),
+    )]),
+  ]);
+  let bytes = cbor_encode(&invalid_zero);
+  assert!(validate_cbor_from_slice(cddl_input, &bytes, None).is_err());
+}
+
+// Regression: `bstr .size N` as a member key must filter Map keys correctly,
+// and as a top-level type must reject inputs of the wrong type or wrong size.
+#[test]
+fn validate_bstr_size_in_member_key_and_top_level() {
+  // Top-level: bytes of size 32.
+  let cddl_input = r#"start = bstr .size 32"#;
+  let bytes_32 = Value::Bytes(vec![0xaa; 32]);
+  validate_cbor_from_slice(cddl_input, &cbor_encode(&bytes_32), None).unwrap();
+
+  let bytes_31 = Value::Bytes(vec![0xaa; 31]);
+  assert!(validate_cbor_from_slice(cddl_input, &cbor_encode(&bytes_31), None).is_err());
+
+  let not_bytes = Value::Text("xx".to_string());
+  assert!(validate_cbor_from_slice(cddl_input, &cbor_encode(&not_bytes), None).is_err());
+
+  // Member key: keys must be bstr; values arbitrary.
+  let cddl_map = r#"start = {* bstr .size 32 => uint}"#;
+  let valid_map = Value::Map(vec![(
+    Value::Bytes(vec![0xbb; 32]),
+    Value::Integer(7.into()),
+  )]);
+  validate_cbor_from_slice(cddl_map, &cbor_encode(&valid_map), None).unwrap();
+
+  // Empty map is also valid under `*`.
+  let empty_map = Value::Map(vec![]);
+  validate_cbor_from_slice(cddl_map, &cbor_encode(&empty_map), None).unwrap();
+}
